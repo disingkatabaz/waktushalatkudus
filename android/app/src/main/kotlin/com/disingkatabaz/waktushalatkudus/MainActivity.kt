@@ -1,4 +1,4 @@
-package com.example.waktushalatkudus
+package com.disingkatabaz.waktushalatkudus
 
 import io.flutter.embedding.android.FlutterActivity
 

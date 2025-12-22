@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -31,12 +32,18 @@ class PrayerTimesPage extends StatefulWidget {
 }
 
 class _PrayerTimesPageState extends State<PrayerTimesPage> {
-  final String cityId = "1415"; 
+  final String cityId = "1415"; // ID Kudus
   
   Map<String, dynamic>? prayerTimes;
   String? lokasiInfo;
   String? daerahInfo;
   String? tanggalInfo;
+  
+  // Variabel untuk Countdown
+  String countdownText = "-- : -- : --";
+  String nextPrayerName = "Memuat...";
+  Timer? _timer;
+
   bool isLoading = true;
   String? errorMessage;
 
@@ -46,13 +53,18 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
     fetchPrayerTimes();
   }
 
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
   Future<void> fetchPrayerTimes() async {
     DateTime now = DateTime.now();
     String year = now.year.toString();
     String month = now.month.toString();
     String day = now.day.toString();
 
-    // Endpoint myQuran.com
     final String url = 'https://api.myquran.com/v2/sholat/jadwal/$cityId/$year/$month/$day';
 
     try {
@@ -63,29 +75,86 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
         
         if (jsonResponse['status'] == true) {
           final data = jsonResponse['data'];
-          setState(() {
-            lokasiInfo = data['lokasi'];
-            daerahInfo = data['daerah'];
-            prayerTimes = data['jadwal'];
-            tanggalInfo = data['jadwal']['tanggal'];
-            isLoading = false;
-          });
+          if (mounted) {
+            setState(() {
+              lokasiInfo = data['lokasi'];
+              daerahInfo = data['daerah'];
+              prayerTimes = data['jadwal'];
+              tanggalInfo = data['jadwal']['tanggal'];
+              isLoading = false;
+            });
+            startCountdown();
+          }
         } else {
-          setState(() {
-            errorMessage = "Gagal memuat data. Pastikan ID Kota benar.";
-            isLoading = false;
-          });
+          if (mounted) setState(() { errorMessage = "Gagal memuat data."; isLoading = false; });
         }
       } else {
-        setState(() {
-          errorMessage = "Error Server: ${response.statusCode}";
-          isLoading = false;
-        });
+        if (mounted) setState(() { errorMessage = "Error Server: ${response.statusCode}"; isLoading = false; });
       }
     } catch (e) {
+      if (mounted) setState(() { errorMessage = "Koneksi gagal."; isLoading = false; });
+    }
+  }
+
+  void startCountdown() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      calculateNextPrayer();
+    });
+  }
+
+  void calculateNextPrayer() {
+    if (prayerTimes == null) return;
+
+    DateTime now = DateTime.now();
+    
+    List<String> timesToCheck = ['imsak', 'subuh', 'terbit', 'dhuha', 'dzuhur', 'ashar', 'maghrib', 'isya'];
+    
+    String? upcomingPrayer;
+    DateTime? upcomingTime;
+
+    // 1. Cek jadwal hari ini
+    for (String key in timesToCheck) {
+      String timeString = prayerTimes![key]; 
+      List<String> parts = timeString.split(':');
+      
+      DateTime prayerDate = DateTime(
+        now.year, now.month, now.day, 
+        int.parse(parts[0]), int.parse(parts[1])
+      );
+
+      if (prayerDate.isAfter(now)) {
+        upcomingPrayer = key;
+        upcomingTime = prayerDate;
+        break; 
+      }
+    }
+
+    // 2. Jika tidak ada jadwal tersisa hari ini, target ke Imsak besok
+    if (upcomingTime == null) {
+      upcomingPrayer = 'imsak'; 
+      String timeString = prayerTimes!['imsak'];
+      List<String> parts = timeString.split(':');
+      
+      upcomingTime = DateTime(
+        now.year, now.month, now.day + 1, 
+        int.parse(parts[0]), int.parse(parts[1])
+      );
+    }
+
+    // 3. Hitung selisih waktu
+    Duration diff = upcomingTime.difference(now);
+
+    // 4. Format ke HH:MM:SS
+    String formattedTime = 
+      "${diff.inHours.toString().padLeft(2, '0')}:"
+      "${(diff.inMinutes % 60).toString().padLeft(2, '0')}:"
+      "${(diff.inSeconds % 60).toString().padLeft(2, '0')}";
+
+    // 5. Update UI
+    if (mounted) {
       setState(() {
-        errorMessage = "Koneksi gagal: Pastikan internet aktif.";
-        isLoading = false;
+        nextPrayerName = capitalize(upcomingPrayer!);
+        countdownText = formattedTime;
       });
     }
   }
@@ -110,10 +179,7 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () {
-              setState(() {
-                isLoading = true;
-                errorMessage = null;
-              });
+              setState(() { isLoading = true; errorMessage = null; });
               fetchPrayerTimes();
             },
           )
@@ -123,56 +189,53 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
         child: isLoading
             ? const CircularProgressIndicator()
             : errorMessage != null
-                ? Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                        const SizedBox(height: 16),
-                        Text(errorMessage!, textAlign: TextAlign.center),
-                        const SizedBox(height: 16),
-                        ElevatedButton(
-                          onPressed: () {
-                             setState(() {
-                                isLoading = true;
-                                errorMessage = null;
-                             });
-                             fetchPrayerTimes();
-                          }, 
-                          child: const Text("Coba Lagi")
-                        )
-                      ],
-                    ),
-                  )
+                ? Text(errorMessage!)
                 : Column(
                     children: [
+                      // --- BAGIAN COUNTDOWN ---
                       Container(
                         width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        // PERBAIKAN DI SINI: Mengganti withOpacity dengan withValues
-                        color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
+                        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primary,
+                          borderRadius: const BorderRadius.only(
+                            bottomLeft: Radius.circular(24),
+                            bottomRight: Radius.circular(24),
+                          ),
+                        ),
                         child: Column(
                           children: [
                             Text(
-                              "$lokasiInfo, $daerahInfo",
+                              "Menuju $nextPrayerName",
                               style: const TextStyle(
-                                fontSize: 16, 
-                                fontWeight: FontWeight.bold
+                                color: Colors.white70,
+                                fontSize: 16,
                               ),
-                              textAlign: TextAlign.center,
                             ),
-                            const SizedBox(height: 4),
+                            const SizedBox(height: 8),
                             Text(
-                              tanggalInfo ?? "-",
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Theme.of(context).colorScheme.secondary
+                              countdownText,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 36,
+                                fontWeight: FontWeight.bold,
+                                fontFamily: 'Monospace',
+                                letterSpacing: 2
                               ),
                             ),
+                            const SizedBox(height: 8),
+                            Text(
+                              "$lokasiInfo, $tanggalInfo",
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 12
+                              ),
+                            )
                           ],
                         ),
                       ),
+                      
+                      // --- LIST JADWAL ---
                       Expanded(
                         child: ListView.builder(
                           padding: const EdgeInsets.all(16),
@@ -181,26 +244,29 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
                             String key = orderedPrayers[index];
                             String time = prayerTimes?[key] ?? '-';
                             
+                            bool isNext = capitalize(key) == nextPrayerName;
+                            
                             return Card(
-                              elevation: 2,
+                              color: isNext ? Theme.of(context).colorScheme.primaryContainer : null,
+                              elevation: isNext ? 4 : 1,
                               margin: const EdgeInsets.symmetric(vertical: 6),
                               child: ListTile(
                                 leading: Icon(
                                   Icons.access_time_filled, 
-                                  color: Theme.of(context).primaryColor
+                                  color: isNext ? Colors.black : Theme.of(context).primaryColor
                                 ),
                                 title: Text(
                                   capitalize(key),
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
+                                  style: TextStyle(
+                                    fontWeight: isNext ? FontWeight.bold : FontWeight.normal,
                                     fontSize: 18
                                   ),
                                 ),
                                 trailing: Text(
                                   time,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 20,
-                                    fontWeight: FontWeight.w500,
+                                    fontWeight: isNext ? FontWeight.bold : FontWeight.w500,
                                     fontFamily: 'Monospace' 
                                   ),
                                 ),
@@ -209,17 +275,6 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
                           },
                         ),
                       ),
-                      Padding(
-                        padding: const EdgeInsets.all(8.0),
-                        child: Text(
-                          "Sumber data: myQuran.com",
-                          style: TextStyle(
-                            fontSize: 12, 
-                            color: Colors.grey[600],
-                            fontStyle: FontStyle.italic
-                          ),
-                        ),
-                      )
                     ],
                   ),
       ),
