@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MyApp());
@@ -39,13 +40,14 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
   String? daerahInfo;
   String? tanggalInfo;
   
-  // Variabel untuk Countdown
+  // Variabel Countdown
   String countdownText = "-- : -- : --";
   String nextPrayerName = "Memuat...";
   Timer? _timer;
 
   bool isLoading = true;
   String? errorMessage;
+  bool isOfflineMode = false; // Penanda mode offline
 
   @override
   void initState() {
@@ -75,6 +77,10 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
         
         if (jsonResponse['status'] == true) {
           final data = jsonResponse['data'];
+          
+          // 1. SIMPAN KE CACHE (MEMORI HP)
+          saveCache(data);
+
           if (mounted) {
             setState(() {
               lokasiInfo = data['lokasi'];
@@ -82,24 +88,87 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
               prayerTimes = data['jadwal'];
               tanggalInfo = data['jadwal']['tanggal'];
               isLoading = false;
+              errorMessage = null;
+              isOfflineMode = false;
             });
             startCountdown();
           }
         } else {
-          if (mounted) setState(() { errorMessage = "Gagal memuat data."; isLoading = false; });
+          // Jika API error, coba load cache
+          loadCache("Gagal mengambil data baru.");
         }
       } else {
-        if (mounted) setState(() { errorMessage = "Error Server: ${response.statusCode}"; isLoading = false; });
+        loadCache("Server Error: ${response.statusCode}");
       }
     } catch (e) {
-      if (mounted) setState(() { errorMessage = "Koneksi gagal."; isLoading = false; });
+      // Jika Internet mati, coba load cache
+      loadCache("Tidak ada koneksi internet.");
+    }
+  }
+
+  // --- FUNGSI SAVE CACHE ---
+  Future<void> saveCache(Map<String, dynamic> data) async {
+    final prefs = await SharedPreferences.getInstance();
+    // Simpan data JSON sebagai String
+    await prefs.setString('cached_prayer_data', json.encode(data));
+    // Simpan tanggal hari ini untuk pengecekan validitas nanti
+    DateTime now = DateTime.now();
+    String dateKey = "${now.year}-${now.month}-${now.day}";
+    await prefs.setString('cached_date_key', dateKey);
+  }
+
+  // --- FUNGSI LOAD CACHE (OFFLINE) ---
+  Future<void> loadCache(String originalError) async {
+    final prefs = await SharedPreferences.getInstance();
+    final String? cachedString = prefs.getString('cached_prayer_data');
+    final String? cachedDateKey = prefs.getString('cached_date_key');
+
+    if (cachedString != null) {
+      final data = json.decode(cachedString);
+      
+      // Cek apakah data cache sesuai dengan tanggal hari ini
+      DateTime now = DateTime.now();
+      String todayKey = "${now.year}-${now.month}-${now.day}";
+      bool isToday = (cachedDateKey == todayKey);
+
+      if (mounted) {
+        setState(() {
+          lokasiInfo = data['lokasi'];
+          daerahInfo = data['daerah'];
+          prayerTimes = data['jadwal'];
+          tanggalInfo = data['jadwal']['tanggal'];
+          isLoading = false;
+          isOfflineMode = true; // Aktifkan tanda offline
+          
+          // Jika data kadaluarsa (bukan hari ini), beri info tambahan
+          if (!isToday) {
+            errorMessage = "$originalError\nMenampilkan data TERAKHIR (Kadaluarsa).";
+          } else {
+            // Jika data masih relevan (hari ini), hanya beri info offline
+            errorMessage = "Mode Offline (Data tersimpan)";
+          }
+        });
+        startCountdown();
+      }
+    } else {
+      // Tidak ada internet DAN tidak ada cache
+      if (mounted) {
+        setState(() {
+          errorMessage = "$originalError\nBelum ada data tersimpan.";
+          isLoading = false;
+        });
+      }
     }
   }
 
   void startCountdown() {
+    // Reset timer jika sudah ada
+    _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       calculateNextPrayer();
     });
+    // Panggil sekali langsung agar tidak menunggu 1 detik
+    calculateNextPrayer();
   }
 
   void calculateNextPrayer() {
@@ -112,7 +181,6 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
     String? upcomingPrayer;
     DateTime? upcomingTime;
 
-    // 1. Cek jadwal hari ini
     for (String key in timesToCheck) {
       String timeString = prayerTimes![key]; 
       List<String> parts = timeString.split(':');
@@ -129,7 +197,6 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
       }
     }
 
-    // 2. Jika tidak ada jadwal tersisa hari ini, target ke Imsak besok
     if (upcomingTime == null) {
       upcomingPrayer = 'imsak'; 
       String timeString = prayerTimes!['imsak'];
@@ -141,16 +208,13 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
       );
     }
 
-    // 3. Hitung selisih waktu
     Duration diff = upcomingTime.difference(now);
 
-    // 4. Format ke HH:MM:SS
     String formattedTime = 
       "${diff.inHours.toString().padLeft(2, '0')}:"
       "${(diff.inMinutes % 60).toString().padLeft(2, '0')}:"
       "${(diff.inSeconds % 60).toString().padLeft(2, '0')}";
 
-    // 5. Update UI
     if (mounted) {
       setState(() {
         nextPrayerName = capitalize(upcomingPrayer!);
@@ -188,95 +252,100 @@ class _PrayerTimesPageState extends State<PrayerTimesPage> {
       body: Center(
         child: isLoading
             ? const CircularProgressIndicator()
-            : errorMessage != null
-                ? Text(errorMessage!)
-                : Column(
-                    children: [
-                      // --- BAGIAN COUNTDOWN ---
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primary,
-                          borderRadius: const BorderRadius.only(
-                            bottomLeft: Radius.circular(24),
-                            bottomRight: Radius.circular(24),
+            : Column(
+                children: [
+                  // --- BAGIAN COUNTDOWN ---
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: isOfflineMode ? Colors.grey[700] : Theme.of(context).colorScheme.primary, // Warna abu jika offline
+                      borderRadius: const BorderRadius.only(
+                        bottomLeft: Radius.circular(24),
+                        bottomRight: Radius.circular(24),
+                      ),
+                    ),
+                    child: Column(
+                      children: [
+                        Text(
+                          "Menuju $nextPrayerName",
+                          style: const TextStyle(color: Colors.white70, fontSize: 16),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          countdownText,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 36,
+                            fontWeight: FontWeight.bold,
+                            fontFamily: 'Monospace',
+                            letterSpacing: 2
                           ),
                         ),
-                        child: Column(
-                          children: [
-                            Text(
-                              "Menuju $nextPrayerName",
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 16,
+                        const SizedBox(height: 8),
+                        // Tampilkan info lokasi atau ERROR MESSAGE jika ada
+                        errorMessage != null
+                          ? Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.redAccent,
+                                borderRadius: BorderRadius.circular(12)
                               ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              countdownText,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 36,
-                                fontWeight: FontWeight.bold,
-                                fontFamily: 'Monospace',
-                                letterSpacing: 2
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              "$lokasiInfo, $tanggalInfo",
-                              style: const TextStyle(
-                                color: Colors.white54,
-                                fontSize: 12
+                              child: Text(
+                                errorMessage!,
+                                style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                                textAlign: TextAlign.center,
                               ),
                             )
-                          ],
-                        ),
-                      ),
-                      
-                      // --- LIST JADWAL ---
-                      Expanded(
-                        child: ListView.builder(
-                          padding: const EdgeInsets.all(16),
-                          itemCount: orderedPrayers.length,
-                          itemBuilder: (context, index) {
-                            String key = orderedPrayers[index];
-                            String time = prayerTimes?[key] ?? '-';
-                            
-                            bool isNext = capitalize(key) == nextPrayerName;
-                            
-                            return Card(
-                              color: isNext ? Theme.of(context).colorScheme.primaryContainer : null,
-                              elevation: isNext ? 4 : 1,
-                              margin: const EdgeInsets.symmetric(vertical: 6),
-                              child: ListTile(
-                                leading: Icon(
-                                  Icons.access_time_filled, 
-                                  color: isNext ? Colors.black : Theme.of(context).primaryColor
-                                ),
-                                title: Text(
-                                  capitalize(key),
-                                  style: TextStyle(
-                                    fontWeight: isNext ? FontWeight.bold : FontWeight.normal,
-                                    fontSize: 18
-                                  ),
-                                ),
-                                trailing: Text(
-                                  time,
-                                  style: TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: isNext ? FontWeight.bold : FontWeight.w500,
-                                    fontFamily: 'Monospace' 
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ],
+                          : Text(
+                              "$lokasiInfo, $tanggalInfo",
+                              style: const TextStyle(color: Colors.white54, fontSize: 12),
+                            )
+                      ],
+                    ),
                   ),
+                  
+                  // --- LIST JADWAL ---
+                  Expanded(
+                    child: ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: orderedPrayers.length,
+                      itemBuilder: (context, index) {
+                        String key = orderedPrayers[index];
+                        String time = prayerTimes?[key] ?? '-';
+                        bool isNext = capitalize(key) == nextPrayerName;
+                        
+                        return Card(
+                          color: isNext ? (isOfflineMode ? Colors.grey[300] : Theme.of(context).colorScheme.primaryContainer) : null,
+                          elevation: isNext ? 4 : 1,
+                          margin: const EdgeInsets.symmetric(vertical: 6),
+                          child: ListTile(
+                            leading: Icon(
+                              Icons.access_time_filled, 
+                              color: isNext ? Colors.black : Theme.of(context).primaryColor
+                            ),
+                            title: Text(
+                              capitalize(key),
+                              style: TextStyle(
+                                fontWeight: isNext ? FontWeight.bold : FontWeight.normal,
+                                fontSize: 18
+                              ),
+                            ),
+                            trailing: Text(
+                              time,
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: isNext ? FontWeight.bold : FontWeight.w500,
+                                fontFamily: 'Monospace' 
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
       ),
     );
   }
