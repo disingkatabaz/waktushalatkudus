@@ -12,133 +12,216 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Jadwal Shalat',
+      title: 'Waktu Shalat Kudus',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        primarySwatch: Colors.green,
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF006C4F)),
         useMaterial3: true,
       ),
-      home: const JadwalShalatPage(),
+      home: const PrayerTimesPage(),
     );
   }
 }
 
-class JadwalShalatPage extends StatefulWidget {
-  const JadwalShalatPage({super.key});
+class PrayerTimesPage extends StatefulWidget {
+  const PrayerTimesPage({super.key});
 
   @override
-  State<JadwalShalatPage> createState() => _JadwalShalatPageState();
+  State<PrayerTimesPage> createState() => _PrayerTimesPageState();
 }
 
-class _JadwalShalatPageState extends State<JadwalShalatPage> {
-  final String cityId = '1415'; // Kudus
+class _PrayerTimesPageState extends State<PrayerTimesPage> {
+  final String cityId = "1415"; 
   
-  Map<String, dynamic>? jadwalData;
+  Map<String, dynamic>? prayerTimes;
+  String? lokasiInfo;
+  String? daerahInfo;
+  String? tanggalInfo;
   bool isLoading = true;
+  String? errorMessage;
 
   @override
   void initState() {
     super.initState();
-    ambilJadwalShalat();
+    fetchPrayerTimes();
   }
 
-  Future<void> ambilJadwalShalat() async {
-    // Ambil tanggal hari ini
-    final now = DateTime.now();
-    final year = now.year;
-    final month = now.month;
-    final day = now.day;
+  Future<void> fetchPrayerTimes() async {
+    DateTime now = DateTime.now();
+    String year = now.year.toString();
+    String month = now.month.toString();
+    String day = now.day.toString();
 
-    // Susun URL API
-    final url = Uri.parse(
-        'https://api.myquran.com/v2/sholat/jadwal/$cityId/$year/$month/$day');
+    // Endpoint myQuran.com
+    final String url = 'https://api.myquran.com/v2/sholat/jadwal/$cityId/$year/$month/$day';
 
     try {
-      final response = await http.get(url);
+      final response = await http.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+        final Map<String, dynamic> jsonResponse = json.decode(response.body);
+        
+        if (jsonResponse['status'] == true) {
+          final data = jsonResponse['data'];
+          setState(() {
+            lokasiInfo = data['lokasi'];
+            daerahInfo = data['daerah'];
+            prayerTimes = data['jadwal'];
+            tanggalInfo = data['jadwal']['tanggal'];
+            isLoading = false;
+          });
+        } else {
+          setState(() {
+            errorMessage = "Gagal memuat data. Pastikan ID Kota benar.";
+            isLoading = false;
+          });
+        }
+      } else {
         setState(() {
-          // Navigasi struktur JSON API myquran: data -> jadwal
-          jadwalData = data['data']['jadwal'];
+          errorMessage = "Error Server: ${response.statusCode}";
           isLoading = false;
         });
-      } else {
-        throw Exception('Gagal memuat data');
       }
     } catch (e) {
       setState(() {
+        errorMessage = "Koneksi gagal: Pastikan internet aktif.";
         isLoading = false;
       });
-      // Tampilkan error di terminal debug jika ada
-      debugPrint("Error: $e");
     }
+  }
+
+  String capitalize(String s) {
+    if (s.isEmpty) return s;
+    return s[0].toUpperCase() + s.substring(1);
   }
 
   @override
   Widget build(BuildContext context) {
+    final List<String> orderedPrayers = [
+      'imsak', 'subuh', 'terbit', 'dhuha', 'dzuhur', 'ashar', 'maghrib', 'isya'
+    ];
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Jadwal Shalat Kudus'),
-        backgroundColor: Colors.green.shade700,
-        foregroundColor: Colors.white,
+        centerTitle: true,
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              setState(() {
+                isLoading = true;
+                errorMessage = null;
+              });
+              fetchPrayerTimes();
+            },
+          )
+        ],
       ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : jadwalData == null
-              ? const Center(child: Text("Gagal mengambil data"))
-              : Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
+      body: Center(
+        child: isLoading
+            ? const CircularProgressIndicator()
+            : errorMessage != null
+                ? Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                        const SizedBox(height: 16),
+                        Text(errorMessage!, textAlign: TextAlign.center),
+                        const SizedBox(height: 16),
+                        ElevatedButton(
+                          onPressed: () {
+                             setState(() {
+                                isLoading = true;
+                                errorMessage = null;
+                             });
+                             fetchPrayerTimes();
+                          }, 
+                          child: const Text("Coba Lagi")
+                        )
+                      ],
+                    ),
+                  )
+                : Column(
                     children: [
-                      // Header Tanggal
-                      Card(
-                        color: Colors.green.shade50,
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(Icons.calendar_today, color: Colors.green),
-                              const SizedBox(width: 10),
-                              Text(
-                                jadwalData!['tanggal'] ?? '-',
-                                style: const TextStyle(
-                                    fontSize: 18, fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      // List Jadwal
-                      Expanded(
-                        child: ListView(
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        // PERBAIKAN DI SINI: Mengganti withOpacity dengan withValues
+                        color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
+                        child: Column(
                           children: [
-                            _buildJadwalItem("Subuh", jadwalData!['subuh']),
-                            _buildJadwalItem("Dzuhur", jadwalData!['dzuhur']),
-                            _buildJadwalItem("Ashar", jadwalData!['ashar']),
-                            _buildJadwalItem("Maghrib", jadwalData!['maghrib']),
-                            _buildJadwalItem("Isya", jadwalData!['isya']),
+                            Text(
+                              "$lokasiInfo, $daerahInfo",
+                              style: const TextStyle(
+                                fontSize: 16, 
+                                fontWeight: FontWeight.bold
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              tanggalInfo ?? "-",
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Theme.of(context).colorScheme.secondary
+                              ),
+                            ),
                           ],
                         ),
                       ),
+                      Expanded(
+                        child: ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: orderedPrayers.length,
+                          itemBuilder: (context, index) {
+                            String key = orderedPrayers[index];
+                            String time = prayerTimes?[key] ?? '-';
+                            
+                            return Card(
+                              elevation: 2,
+                              margin: const EdgeInsets.symmetric(vertical: 6),
+                              child: ListTile(
+                                leading: Icon(
+                                  Icons.access_time_filled, 
+                                  color: Theme.of(context).primaryColor
+                                ),
+                                title: Text(
+                                  capitalize(key),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 18
+                                  ),
+                                ),
+                                trailing: Text(
+                                  time,
+                                  style: const TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w500,
+                                    fontFamily: 'Monospace' 
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Text(
+                          "Sumber data: myQuran.com",
+                          style: TextStyle(
+                            fontSize: 12, 
+                            color: Colors.grey[600],
+                            fontStyle: FontStyle.italic
+                          ),
+                        ),
+                      )
                     ],
                   ),
-                ),
-    );
-  }
-
-  Widget _buildJadwalItem(String waktu, String jam) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      elevation: 2,
-      child: ListTile(
-        leading: const Icon(Icons.access_time_filled, color: Colors.green),
-        title: Text(waktu, style: const TextStyle(fontWeight: FontWeight.bold)),
-        trailing: Text(
-          jam,
-          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-        ),
       ),
     );
   }
